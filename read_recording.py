@@ -64,6 +64,9 @@ class DataReader:
             plt.show()
         return first_timestamp, timestamps, sensor_data
 
+    # method to calculate PSD for sensors, can be used with independent data
+    # input_shape must be (num_of_sensors, num_of_values)
+    # if show_plot is True: visualizing data (not tested)
     def get_spectr(self, sensors_data, show_plot=False):
         power_res = []
         freqs_res = []
@@ -73,6 +76,7 @@ class DataReader:
                 plt.show()
             else:
                 power, freqs = mlab.psd(sensors_data[row_index], NFFT=256)
+                # uncomment to see num of freqs
                 # print(len(power))
             power = 10 * np.log10(power[2:-2])  # [82:-1])
             # print(power[82:-1])
@@ -84,9 +88,14 @@ class DataReader:
         return freqs_res, power_res
 
 
+# was used for statistics
+# input data: raw_eeg_data and calculated PSD from raw_eeg_data
+# returns two-dimensional array with statistics params for each sensor
 def extract_spectr_statistics(raw_sample, spectr_sample, add_index=True):
     if len(raw_sample) != len(spectr_sample):
         raise ValueError('samples have different number of channels')
+    # used to divide eeg rythms
+    # TODO change ratio to multiply with current len of spectral freqs returned from get_spectr method
     borders = np.round(np.array([0, 4, 8, 14, 30, 50, 62]) * (125 / 65)).astype(int)
     res = []
     for chn in range(len(spectr_sample)):
@@ -114,26 +123,29 @@ def wavelet_denoise(data):
     res = []
     for sensor_data in data:
         # Create wavelet object and define parameters
-        # w = pywt.Wavelet('db6')
-        # maxlev = pywt.dwt_max_level(len(sensor_data), w.dec_len)
-        # # maxlev = 6 # Override if desired
-        # threshold = 0.3  # Threshold for filtering
-        #
-        # # Decompose into wavelet components, to the level selected:
-        # coeffs = pywt.wavedec(sensor_data, 'db6', level=maxlev)
-        #
-        # # cA = pywt.threshold(cA, threshold*max(cA))
-        # for i in range(1, len(coeffs)):
-        #     # plt.subplot(maxlev, 1, i)
-        #     # plt.plot(coeffs[i])
-        #     coeffs[i] = pywt.threshold(coeffs[i], threshold * np.amax(coeffs[i]))
-        #     # plt.plot(coeffs[i])
-        #
-        # datarec = pywt.waverec(coeffs, 'db6')
-        res.append(sensor_data)
+        w = pywt.Wavelet('db6')
+        maxlev = pywt.dwt_max_level(len(sensor_data), w.dec_len)
+        threshold = 0.3  # Threshold for filtering
+
+        # Decompose into wavelet components, to the level selected:
+        coeffs = pywt.wavedec(sensor_data, 'db6', level=maxlev)
+
+        for i in range(1, len(coeffs)):
+            # plt.subplot(maxlev, 1, i)
+            # plt.plot(coeffs[i])
+            coeffs[i] = pywt.threshold(coeffs[i], threshold * np.amax(coeffs[i]))
+            # plt.plot(coeffs[i])
+
+        datarec = pywt.waverec(coeffs, 'db6')
+        # change or uncomment line to turn on or off the denoising
+        # append datarec -- denoising ON
+        # append sensor_data -- denoising OFF
+        res.append(datarec)
+        # res.append(sensor_data)
     return np.array(res)
 
 
+# function to read, proccess and append to resulting array data from raw eeg recording
 def proccess_protocol(dir_path, frontal_sensors, motor_sensors, modifiers, num=0,
                       debug=False, sensor_to_viz_id=None, finger_label_to_vis=None,
                       cut_raw_sample_num=None):
@@ -147,20 +159,25 @@ def proccess_protocol(dir_path, frontal_sensors, motor_sensors, modifiers, num=0
         print('ERROR File not found')
         print(dir_path)
         return
+    # this vars will be replaced by eeg samples
     eye_blink_data, calm_eeg_data = None, None
+    # python lists => np.ndarray => return values
     data = []
     labels_states = []
     labels_fingers = []
     single_labels = []
     raw_eeg_data = []
+
     was_clunch, was_relax = False, False
     try:
         relax_samples, clunch_samples = [], []
         stat_relax, stat_clunch, stat_spectr_relax, stat_spectr_clunch = [], [], [], []
         # plt.figure('spectr diff')
         for log_row in time_log_reader:
+            # var to move eeg sample borders
             DELTA = 0.5
             start_timestamp, stop_timestamp, clunch, relax, *fingers = map(float, log_row)
+            # moving borders before reading the eeg values
             start_timestamp -= DELTA
             stop_timestamp += DELTA
             if clunch + relax < 0.001:  # 0 and 0 => eye blinking
@@ -171,18 +188,18 @@ def proccess_protocol(dir_path, frontal_sensors, motor_sensors, modifiers, num=0
                                                                                  frontal_sensors + motor_sensors)
                 if debug:
                     print(eye_blink_data.shape)
-            elif clunch + relax > 1.999:
+            elif clunch + relax > 1.999:  # 1 and 1 => calm eeg
                 if calm_eeg_data:
                     print('calm eeg already initialized')
                     raise ValueError
                 _, calm_eeg_timestamps, calm_eeg_data = interface.read_from_to(start_timestamp, stop_timestamp,
                                                                                motor_sensors)
-                spectr_test = np.mean(interface.get_spectr(calm_eeg_data))
                 print(calm_eeg_data.shape)
             elif not calm_eeg_data.any() and not eye_blink_data.any():
                 print('no initial data found yet')
                 continue
             else:
+                # getting motor, then frontal data
                 motor_start_timestamp, motor_timestamps, sample_motor_data = interface.read_from_to(
                     start_timestamp,
                     stop_timestamp,
@@ -193,6 +210,7 @@ def proccess_protocol(dir_path, frontal_sensors, motor_sensors, modifiers, num=0
                     stop_timestamp,
                     frontal_sensors,
                     save_index=(RAW_EEG not in modifiers))
+                # reading raw eeg (not PSD) if flag is in modifiers
                 if RAW_EEG in modifiers:
                     begin_raw_eeg_timestamp, raw_eeg_timestamps, sample_raw_eeg_data = interface.read_from_to(
                         start_timestamp,
@@ -200,6 +218,7 @@ def proccess_protocol(dir_path, frontal_sensors, motor_sensors, modifiers, num=0
                         frontal_sensors + motor_sensors)
                     # mean_peaks_data = np.mean(sample_raw_eeg_data, axis=0)
                     peak_to_skip = False
+                    # filtering peaks
                     for peak_data in sample_raw_eeg_data:
                         # if peak_data[peak_data > 4600.].any() or peak_data[peak_data < 4250.].any():
                         if peak_data[peak_data > 5000.].any() or peak_data[peak_data < 4000.].any():
@@ -234,6 +253,7 @@ def proccess_protocol(dir_path, frontal_sensors, motor_sensors, modifiers, num=0
                     # print('filtered data length is', filtered_data.shape)
                     # plt.plot(np.arange(filtered_data.shape[1]), filtered_data[0], color='red')
 
+                # visualization of given sensor or sensor, NOT TESTED
                 if debug and sensor_to_viz_id:
                     if sensor_to_viz_id in frontal_sensors:
                         n = frontal_sensors.index(sensor_to_viz_id)
@@ -255,6 +275,7 @@ def proccess_protocol(dir_path, frontal_sensors, motor_sensors, modifiers, num=0
                         if was_relax and was_clunch:
                             plt.show()
                             was_relax, was_clunch = False, False
+
                 if FILTER_PEAKS in modifiers:
                     sample_freqs, sample_spectr = interface.get_spectr(filtered_motor_data)
                     if clunch or relax:
@@ -291,7 +312,7 @@ def proccess_protocol(dir_path, frontal_sensors, motor_sensors, modifiers, num=0
                             plt.plot(sample_freqs[0], np.mean(stat_spectr_clunch, axis=0))
                             plt.show()
                             quit()
-
+                    # uncomment the following lines to visualize 102nd sample or change num
                     # if num == 102:
                     #     print()
                     #     print(relax)
@@ -369,6 +390,9 @@ def proccess_protocol(dir_path, frontal_sensors, motor_sensors, modifiers, num=0
                 num += 1
                 if num % 10 == 0:
                     print(num)
+
+                # uncomment the following lines to visualize samples from debug arrays above
+
                 # if num > 9:
                 #     '''relax_samples = np.mean(np.array(relax_samples), axis=0)
                 #     clunch_samples = np.mean(np.array(clunch_samples), axis=0)
@@ -406,6 +430,7 @@ def proccess_protocol(dir_path, frontal_sensors, motor_sensors, modifiers, num=0
                 #     plt.show()
                 #     continue
 
+        # list => np.ndarray
         data = np.array(data)
         labels_states = np.array(labels_states)
         labels_fingers = np.array(labels_fingers)
@@ -420,6 +445,7 @@ def proccess_protocol(dir_path, frontal_sensors, motor_sensors, modifiers, num=0
         time_log_file.close()
 
 
+# modifiers
 RAW_EEG = 1
 LABELS_STATE = 2
 LABELS_FINGERS = 3
@@ -428,6 +454,7 @@ SQUARE_MATRIX = 5
 SINGLE_LABEL = 6
 PADDING_1 = 7
 
+# sensors ids
 INTERPOLATED_CHN = 2
 AF_3 = 3
 F_7 = 4
@@ -455,10 +482,13 @@ if __name__ == '__main__':
     motor_sensors = ALL_SENSORS
     raw_eeg_sensors = ALL_SENSORS
     modifiers = [LABELS_STATE, LABELS_FINGERS, SINGLE_LABEL, RAW_EEG, FILTER_PEAKS, PADDING_1]
+    # list of csv dirs to read and save
     csv_data_directories = ['bogdan_comb_allhand']
     # 'bogdan_im_allhand']  # 'ilya_1_im']  # , 'Bogdan_1', 'denis1', 'denis1/save', 'fH13a',
     # '18071249', 'dW32o', 'kB18d', 'mK65k', 'oL43c',
     # 'dW32o', 'rU46w']
+    # change csv_val_data_directory to the last dir in csv_data_directories lists
+    # to see the possible validation array shape
     csv_val_data_directory = 'rU46w'
     save_data_directory = 'dataset'
     num = 0
@@ -476,6 +506,7 @@ if __name__ == '__main__':
         # plt.show()
         # quit()
         print(f'saving {csv_dir}')
+        # appending new data to resulting arrays
         print('appending new data')
         if new_data.any():
             for info_row in new_data:
@@ -496,6 +527,7 @@ if __name__ == '__main__':
         if csv_dir == csv_val_data_directory:
             print(f'val data shape is {new_data.shape}')
 
+    # printing stat info
     minm = np.amin(data)
     data -= minm
     data /= np.amax(data)
@@ -527,6 +559,7 @@ if __name__ == '__main__':
     for i in [data, label_states, label_fingers, single_labels, raw_eeg]:
         print(i.shape)
     # plt.show()
+    # saving data to files
     if not os.path.isdir(save_data_directory):
         os.mkdir(save_data_directory)
     with open(f'{save_data_directory}/data.pickle', mode='wb') as file:
